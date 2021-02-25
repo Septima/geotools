@@ -74,7 +74,8 @@ public class JoiningJDBCFeatureSource extends JDBCFeatureSource {
 
     private static final Logger LOGGER = Logging.getLogger(JoiningJDBCFeatureSource.class);
 
-    private static final String TEMP_FILTER_ALIAS = "temp_alias_used_for_filter";
+    private static final String TEMP_FILTER_ALIAS =
+            "temp_alias_used_for_filter_septimatest"; // back to oldie
     public static final String FOREIGN_ID = "FOREIGN_ID";
     // attribute to indicate primary key column, so it can be retrieved from the feature type
     public static final String PRIMARY_KEY = "PARENT_TABLE_PKEY";
@@ -754,12 +755,23 @@ public class JoiningJDBCFeatureSource extends JDBCFeatureSource {
             for (String pk : lastPkColumnNames) {
                 if (!ids.contains(pk)) {
                     getDataStore().dialect.encodeColumnName(null, pk, sortBySQL);
-                    sortBySQL.append(" FROM ");
+                    if (lastPkColumnNames.size() - 1 <= i) {
+                        sortBySQL.append(", ");
+                    }
+                }
+            }
+            {
+                {
+                    sortBySQL.append(" FROM /* SEPTIMA-PATCHING */");
                     getDataStore().encodeTableName(lastTableName, sortBySQL, query.getHints());
                     sortBySQL.append(" ").append(toSQL.encodeToString(filter));
                     sortBySQL.append(" ) ");
                     getDataStore().dialect.encodeTableName(TEMP_FILTER_ALIAS, sortBySQL);
                     sortBySQL.append(" ON ( ");
+                }
+            }
+            for (String pk : lastPkColumnNames) {
+                /*if (!ids.contains(pk)) */ {
                     encodeColumnName2(pk, lastTableAlias, sortBySQL, null);
                     sortBySQL.append(" = ");
                     encodeColumnName2(pk, TEMP_FILTER_ALIAS, sortBySQL, null);
@@ -780,6 +792,9 @@ public class JoiningJDBCFeatureSource extends JDBCFeatureSource {
         }
     }
 
+    /* ------------------------------------------ */
+    /* PATCHING - Septima */
+
     private boolean buildFiterBasedOnSortBy(
             JoiningQuery query,
             FilterToSQL toSQL,
@@ -791,10 +806,9 @@ public class JoiningJDBCFeatureSource extends JDBCFeatureSource {
             StringBuffer sortBySQL,
             boolean hasSortBy)
             throws SQLException, FilterToSQLException {
-        for (int i = 0; i < lastSortBy.length; i++) {
-            if (!ids.contains(lastSortBy[i].getPropertyName().toString())) {
-                hasSortBy =
-                        processSortByKey(
+        hasSortBy =
+                hasSortBy
+                        || processSortByKey(
                                 query,
                                 toSQL,
                                 filter,
@@ -802,9 +816,8 @@ public class JoiningJDBCFeatureSource extends JDBCFeatureSource {
                                 lastTableName,
                                 lastTableAlias,
                                 sortBySQL,
-                                i);
-            }
-        }
+                                ids,
+                                0);
         return hasSortBy;
     }
 
@@ -823,18 +836,20 @@ public class JoiningJDBCFeatureSource extends JDBCFeatureSource {
             StringBuffer sortBySQL,
             boolean hasSortBy)
             throws SQLException, FilterToSQLException {
-        for (int i = lastSortBy.length - lastPkColumnNames.size(); i < lastSortBy.length; i++) {
-            hasSortBy =
-                    processSortByKey(
-                            query,
-                            toSQL,
-                            filter,
-                            lastSortBy,
-                            lastTableName,
-                            lastTableAlias,
-                            sortBySQL,
-                            i);
-        }
+        Collection<String> ids =
+                Collections.emptyList(); // Hack, could also be null and test for null on usage.
+        hasSortBy =
+                hasSortBy
+                        || processSortByKey(
+                                query,
+                                toSQL,
+                                filter,
+                                lastSortBy,
+                                lastTableName,
+                                lastTableAlias,
+                                sortBySQL,
+                                ids,
+                                lastSortBy.length - lastPkColumnNames.size());
         return hasSortBy;
     }
 
@@ -846,16 +861,24 @@ public class JoiningJDBCFeatureSource extends JDBCFeatureSource {
             String lastTableName,
             String lastTableAlias,
             StringBuffer sortBySQL,
-            int i)
+            Collection<String> ids,
+            int minFieldUse)
             throws SQLException, FilterToSQLException {
-        boolean hasSortBy;
+
         // skip if inner join is already done in paging
-        getDataStore()
-                .dialect
-                .encodeColumnName(
-                        lastTableName,
-                        lastSortBy[i].getPropertyName().getPropertyName(),
-                        sortBySQL);
+        boolean hasNone = true;
+        for (int i = minFieldUse; i < lastSortBy.length; i++)
+            if (!ids.contains(lastSortBy[i].getPropertyName().toString())) {
+                hasNone = false;
+                if (minFieldUse < i) sortBySQL.append(", ");
+                getDataStore()
+                        .dialect
+                        .encodeColumnName(
+                                lastTableName,
+                                lastSortBy[i].getPropertyName().getPropertyName(),
+                                sortBySQL);
+            }
+        if (hasNone) return false; // None added
         sortBySQL.append(" FROM ");
         getDataStore().encodeTableName(lastTableName, sortBySQL, query.getHints());
         // perform a left join with multi values tables of the root feature type
@@ -877,20 +900,26 @@ public class JoiningJDBCFeatureSource extends JDBCFeatureSource {
         sortBySQL.append(" ) ");
         getDataStore().dialect.encodeTableName(TEMP_FILTER_ALIAS, sortBySQL);
         sortBySQL.append(" ON ( ");
-        encodeColumnName2(
-                lastSortBy[i].getPropertyName().getPropertyName(), lastTableAlias, sortBySQL, null);
-        sortBySQL.append(" = ");
-        encodeColumnName2(
-                lastSortBy[i].getPropertyName().getPropertyName(),
-                TEMP_FILTER_ALIAS,
-                sortBySQL,
-                null);
-        if (i < lastSortBy.length - 1) {
-            sortBySQL.append(" AND ");
-        }
-        hasSortBy = true;
-        return hasSortBy;
+        for (int i = minFieldUse; i < lastSortBy.length; i++)
+            if (!ids.contains(lastSortBy[i].getPropertyName().toString())) {
+                if (minFieldUse < i) sortBySQL.append(" AND ");
+                encodeColumnName2(
+                        lastSortBy[i].getPropertyName().getPropertyName(),
+                        lastTableAlias,
+                        sortBySQL,
+                        null);
+                sortBySQL.append(" = ");
+                encodeColumnName2(
+                        lastSortBy[i].getPropertyName().getPropertyName(),
+                        TEMP_FILTER_ALIAS,
+                        sortBySQL,
+                        null);
+            }
+        return true;
     }
+
+    /* PATCHING SEPTIMA END */
+    /* ------------------------------------------ */
 
     private void encodeMultipleValueJoin(
             FeatureTypeMapping rootMapping,
